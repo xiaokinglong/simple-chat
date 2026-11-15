@@ -19,6 +19,7 @@ export type ChatRequestType = z.infer<typeof ChatRequestSchema>;
 export const DeltaSchema = z.object({
   role: z.enum(["assistant"]).optional(),
   content: z.string().nullable().optional(),
+  reasoning: z.string().nullable().optional(),
   reasoning_content: z.string().nullable().optional(),
 });
 
@@ -40,3 +41,12 @@ export const ChatCompletionChunkSchema = z.object({
   choices: z.array(ChoicesSchema),
 });
 export type ChatCompletionChunkType = z.infer<typeof ChatCompletionChunkSchema>;
+
+// TODO:  ReasoningEventSchema
+export const ReasoningEventSchema = z.object({
+  type: z.enum(["reasoning", "reasoning_done"]),
+  content: z.string().optional(),
+  seconds: z.number().optional(),
+});
+
+export type ReasoningEventType = z.infer<typeof ReasoningEventSchema>;

@@ -5,29 +5,53 @@ import { useState, useEffect, useRef } from "react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 
-import { ChatMessageSchema, ChatCompletionChunkSchema } from "@/lib/schemas";
+import Loading from "@/components/loading";
+import ReasoningComponent from "@/components/Reasoning";
+
+import {
+  ChatMessageSchema,
+  ChatCompletionChunkSchema,
+  ReasoningEventSchema,
+} from "@/lib/schemas";
 import type {
   ChatMessageType,
   ChatRequestType,
   ChoicesType,
 } from "@/lib/schemas";
 
+// TODO: 全局控制思考是否折叠
+const reasoningIsOpen = true;
+
 export default function ChatPage() {
+  // 这样第二轮问完，第一轮的思考还留在第一条 AI 气泡里，不会被清掉
+  type DisplayMessage = ChatMessageType & {
+    reasoning?: string; // 这条 AI 消息的思考全文
+    thinkingSeconds?: number; // 这条想了几秒
+    reasoningOpen?: boolean; // 这条的折叠开还是收，默认收起
+  };
+
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  const [messages, setMessages] = useState<ChatMessageType[]>([]);
-  const [userMessage, setUserMessage] = useState<string>("介绍下你自己");
+  // TODO: 请求数据的Loading控制
+  const [fetchLoading, setFetchLoading] = useState(false);
+
+  const [messages, setMessages] = useState<DisplayMessage[]>([]);
+  const [userMessage, setUserMessage] = useState<string>("帮我查询账单");
+
+  const [isThinking, setIsThinking] = useState(false);
 
   useEffect(() => {
-    // 滚动
+    // TODO: 滚动到底部
     scrollRef.current?.scrollTo({
       top: scrollRef.current.scrollHeight,
       behavior: "smooth",
     });
   }, [messages]);
 
-  // 发送消息的函数
+  // TODO: 发送消息的函数
   const handleSend = async () => {
+    if (!userMessage.trim()) return;
+
     const user: ChatMessageType = {
       role: "user",
       content: userMessage,
@@ -52,12 +76,28 @@ export default function ChatPage() {
     await fetchMessage({ messages: multiterm });
   };
 
+  // TODO: 获取消息
   const fetchMessage = async (params: ChatRequestType) => {
+    setFetchLoading(true);
+
+    // TODO: 不将 ai 的思考内容在次喂给大模型
+    const clean = params.messages.map(({ role, content }) => {
+      return {
+        role,
+        content,
+      };
+    });
+
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(params),
+      body: JSON.stringify({
+        messages: clean,
+      }),
     });
+
+    setFetchLoading(false);
+
     if (!res.ok || !res.body) return;
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
@@ -77,8 +117,51 @@ export default function ChatPage() {
         if (!line.startsWith("data:")) continue;
         const data: string = line.slice(5).trim();
         if (data === "[DONE]") continue;
+        let obj: unknown;
+        try {
+          obj = JSON.parse(data);
+        } catch {
+          continue;
+        }
+        // TODO: 先处理 reasoning
+        const reasoningParsed = ReasoningEventSchema.safeParse(obj);
+
+        if (reasoningParsed.success) {
+          if (reasoningParsed.data.type === "reasoning") {
+            setIsThinking(true);
+            if (reasoningParsed.data.content) {
+              const piece = reasoningParsed.data.content;
+              setMessages((prev) => {
+                const copy = [...prev];
+                const last = copy[copy.length - 1];
+                copy[copy.length - 1] = {
+                  ...last,
+                  reasoning: (last.reasoning ?? "") + piece,
+                  reasoningOpen: reasoningIsOpen,
+                };
+                return copy;
+              });
+            }
+          } else {
+            // TODO: 思考结束
+            setIsThinking(false);
+            const seconds = reasoningParsed.data.seconds ?? 0;
+            setMessages((prev) => {
+              const copy = [...prev];
+              const last = copy[copy.length - 1];
+              copy[copy.length - 1] = {
+                ...last,
+                thinkingSeconds: seconds,
+                reasoningOpen: reasoningIsOpen,
+              };
+              return copy;
+            });
+          }
+          continue;
+        }
+
         // 使用zod 校验数据的类型
-        const chunk = ChatCompletionChunkSchema.safeParse(JSON.parse(data));
+        const chunk = ChatCompletionChunkSchema.safeParse(obj);
         if (!chunk.success) continue;
         const choice: ChoicesType = chunk.data.choices[0];
         if (choice?.delta.content) {
@@ -90,7 +173,7 @@ export default function ChatPage() {
     }
   };
 
-  // 更新最新的文本
+  // TODO: 更新最新的文本
   const updateText = (text: string) => {
     setMessages((prev) => {
       const next = [...prev];
@@ -119,21 +202,43 @@ export default function ChatPage() {
                     <div className="relative right-0 h-6 w-6 rounded-2xl bg-gray-300 text-center text-sm leading-[24px]">
                       你
                     </div>
-                    <div className="mt-1 text-sm break-words whitespace-pre-wrap">
+                    <div className="mt-1 text-sm wrap-break-word whitespace-pre-wrap">
                       {t?.content}
                     </div>
                   </div>
                 );
               } else {
+                const isLast = index === messages.length - 1;
                 return (
                   <div
                     key={index}
                     className="mb-2 rounded border p-2 align-sub"
                   >
+                    {fetchLoading && <Loading />}
                     <div className="relative right-0 h-6 w-6 rounded-2xl bg-gray-300 text-center text-sm leading-[24px]">
                       ai
                     </div>
-                    <div className="mt-1 text-sm break-words whitespace-pre-wrap">
+
+                    {/* TODO: 渲染ReasoningComponent */}
+                    {t.reasoning && (
+                      <ReasoningComponent
+                        reasoning={t.reasoning}
+                        thinkingSeconds={t.thinkingSeconds}
+                        isOpen={t.reasoningOpen}
+                        isThinking={isLast && isThinking}
+                        onToggle={() =>
+                          setMessages((prev) => {
+                            const copy = [...prev];
+                            copy[index] = {
+                              ...copy[index],
+                              reasoningOpen: !copy[index].reasoningOpen,
+                            };
+                            return copy;
+                          })
+                        }
+                      />
+                    )}
+                    <div className="mt-1 text-sm wrap-break-word whitespace-pre-wrap">
                       {t?.content}
                     </div>
                   </div>
